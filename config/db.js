@@ -1,23 +1,22 @@
 const mongoose = require('mongoose');
 const User = require('../models/User'); // Import the User model
-
-const MONGO_URI = "mongodb+srv://nadeemji:9120298775@cluster0.xrj1qki.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0";
+require('dotenv').config(); // 👈 Load .env variables
 
 const connectDB = async () => {
     try {
-        // Connect to MongoDB
-     await mongoose.connect(MONGO_URI);
+        // 👇 Get Mongo URI from .env
+        const MONGO_URI = process.env.MONGODB_URI;
+
+        await mongoose.connect(MONGO_URI);
         console.log('MongoDB Connected Successfully');
-        // Create the empty User collection
+
+        // Optional: create collection
         await User.createCollection();
         console.log('User collection created successfully');
     } catch (err) {
         console.error('MongoDB Connection Failed:', err.message);
-        process.exit(1); // Exit the process with failure
+        process.exit(1);
     }
 };
 
-// connectDB();
-
 module.exports = connectDB;
- 

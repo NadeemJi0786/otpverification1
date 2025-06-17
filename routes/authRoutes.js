@@ -9,7 +9,9 @@ const {
     forgotPassword,
     verifyResetOTP,
     resetPassword,
-    currentUser // Add this to the destructured imports
+    currentUser,
+    completeReferral,
+    getReferralStats
 } = require('../controllers/authController');
 const authMiddleware = require('../middleware/authMiddleware');
 
@@ -22,11 +24,15 @@ router.post('/resend-otp', resendOTP);
 router.post('/login', login);
 router.post('/logout', logout);
 router.get('/dashboard', authMiddleware, dashboard);
-router.get('/current-user', currentUser); // Use the correct function name here
+router.get('/current-user', authMiddleware, currentUser);
 
 // Forgot Password routes
 router.post('/forgot-password', forgotPassword);
 router.post('/verify-reset-otp', verifyResetOTP);
 router.post('/reset-password', resetPassword);
+
+// Referral System routes
+router.post('/complete-referral', authMiddleware, completeReferral);
+router.get('/referral-stats', authMiddleware, getReferralStats);
 
 module.exports = router;

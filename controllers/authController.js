@@ -257,15 +257,29 @@ exports.login = async (req, res) => {
 
         if (!user) return res.status(400).json({ message: 'User not found' });
         if (user.password !== password) return res.status(400).json({ message: 'Incorrect password' });
-
-        if (!user.isVerified) {
-            return res.status(400).json({ message: 'Email not verified. Please verify OTP.' });
-        }
+        if (!user.isVerified) return res.status(400).json({ message: 'Email not verified. Please verify OTP.' });
 
         req.session.user = { id: user._id, email: user.email, name: user.name };
-        res.json({ message: 'Login successful' });
+        res.json({ 
+            message: 'Login successful',
+            user: { name: user.name, email: user.email } // Send user data to frontend
+        });
     } catch (error) {
         res.status(500).json({ message: 'Error logging in', error });
+    }
+};
+
+// ------------------ CURRENT USER ------------------
+exports.currentUser = (req, res) => {
+    if (req.session.user) {
+        res.json({ 
+            isAuthenticated: true,
+            user: req.session.user 
+        });
+    } else {
+        res.json({ 
+            isAuthenticated: false 
+        });
     }
 };
 
@@ -279,7 +293,10 @@ exports.logout = (req, res) => {
 
 // ------------------ DASHBOARD ------------------
 exports.dashboard = async (req, res) => {
-    res.json({ message: `Welcome to the dashboard, ${req.session.user.name}` });
+    res.json({ 
+        message: `Welcome to the dashboard, ${req.session.user.name}`,
+        user: req.session.user 
+    });
 };
 
 // ------------------ FORGOT PASSWORD ------------------

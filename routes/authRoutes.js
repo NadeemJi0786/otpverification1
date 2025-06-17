@@ -8,7 +8,8 @@ const {
     dashboard,
     forgotPassword,
     verifyResetOTP,
-    resetPassword
+    resetPassword,
+    currentUser // Add this to the destructured imports
 } = require('../controllers/authController');
 const authMiddleware = require('../middleware/authMiddleware');
 
@@ -21,6 +22,7 @@ router.post('/resend-otp', resendOTP);
 router.post('/login', login);
 router.post('/logout', logout);
 router.get('/dashboard', authMiddleware, dashboard);
+router.get('/current-user', currentUser); // Use the correct function name here
 
 // Forgot Password routes
 router.post('/forgot-password', forgotPassword);

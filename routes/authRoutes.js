@@ -10,7 +10,6 @@ const {
     verifyResetOTP,
     resetPassword,
     currentUser,
-    completeReferral,
     getReferralStats
 } = require('../controllers/authController');
 const authMiddleware = require('../middleware/authMiddleware');
@@ -32,7 +31,6 @@ router.post('/verify-reset-otp', verifyResetOTP);
 router.post('/reset-password', resetPassword);
 
 // Referral System routes
-router.post('/complete-referral', authMiddleware, completeReferral);
 router.get('/referral-stats', authMiddleware, getReferralStats);
 
 module.exports = router;

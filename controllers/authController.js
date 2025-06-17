@@ -221,7 +221,7 @@ const emailTemplates = {
     `
 };
 
-// ------------------ REGISTER (Updated with Referral System) ------------------
+// ------------------ REGISTER (Updated with Immediate Referral Completion) ------------------
 exports.register = async (req, res) => {
     try {
         const { name, email, password, referralCode } = req.body;
@@ -241,7 +241,9 @@ exports.register = async (req, res) => {
             otpExpiry,
             referralCode: userReferralCode,
             referralCount: 0,
-            referralEarnings: 0
+            referralEarnings: 0,
+            pendingReferrals: [],
+            completedReferrals: []
         });
 
         await user.save();
@@ -250,18 +252,39 @@ exports.register = async (req, res) => {
         if (referralCode) {
             const referrer = await User.findOne({ referralCode });
             if (referrer) {
-                // Create referral record
+                // Create referral record and mark as completed immediately
                 const referral = new Referral({
                     referrer: referrer._id,
                     referee: user._id,
                     referralCodeUsed: referralCode,
-                    status: 'pending' // will change to completed after first transaction
+                    status: 'completed',
+                    completedAt: new Date()
                 });
                 await referral.save();
 
-                // Update referrer's pending referrals
-                referrer.pendingReferrals.push(user._id);
+                // Update referrer's stats immediately
+                referrer.referralCount += 1;
+                referrer.referralEarnings += 100; // ₹100 per referral
+                referrer.completedReferrals.push({
+                    userId: user._id,
+                    name: user.name,
+                    email: user.email,
+                    joinedAt: new Date()
+                });
                 await referrer.save();
+
+                // Update referee's info
+                user.referredBy = referrer._id;
+                await user.save();
+
+                // Send email notification to referrer
+                await transporter.sendMail({
+                    from: `"PaisaPe" <${process.env.GMAIL_USER}>`,
+                    to: referrer.email,
+                    subject: 'You Earned a Referral Bonus!',
+                    html: emailTemplates.referralSuccess(referrer.name, user.name, 100),
+                    text: `Congratulations ${referrer.name}! You've earned ₹100 for referring ${user.name} to PaisaPe.`
+                });
             }
         }
 
@@ -282,7 +305,7 @@ exports.register = async (req, res) => {
     }
 };
 
-// ------------------ VERIFY OTP (Updated with Referral Welcome Email) ------------------
+// ------------------ VERIFY OTP (Updated with Welcome Email) ------------------
 exports.verifyOTP = async (req, res) => {
     try {
         const { email, otp } = req.body;
@@ -318,68 +341,14 @@ exports.verifyOTP = async (req, res) => {
     }
 };
 
-// ------------------ COMPLETE REFERRAL (When referee completes first transaction) ------------------
-exports.completeReferral = async (req, res) => {
-    try {
-        const { userId } = req.body;
-        const bonusAmount = 100; // ₹100 per referral
-
-        // Find referral record
-        const referral = await Referral.findOne({ 
-            referee: userId,
-            status: 'pending'
-        }).populate('referrer');
-
-        if (!referral) {
-            return res.status(400).json({ message: 'No pending referral found' });
-        }
-
-        // Update referral status
-        referral.status = 'completed';
-        referral.completedAt = new Date();
-        await referral.save();
-
-        // Update referrer's stats
-        const referrer = await User.findById(referral.referrer);
-        referrer.referralCount += 1;
-        referrer.referralEarnings += bonusAmount;
-        referrer.pendingReferrals.pull(userId);
-        referrer.completedReferrals.push(userId);
-        await referrer.save();
-
-        // Update referee's stats
-        const referee = await User.findById(userId);
-        referee.referredBy = referrer._id;
-        referee.referralBonusUsed = true;
-        await referee.save();
-
-        // Send email notification to referrer
-        await transporter.sendMail({
-            from: `"PaisaPe" <${process.env.GMAIL_USER}>`,
-            to: referrer.email,
-            subject: 'You Earned a Referral Bonus!',
-            html: emailTemplates.referralSuccess(referrer.name, referee.name, bonusAmount),
-            text: `Congratulations ${referrer.name}! You've earned ₹${bonusAmount} for referring ${referee.name} to PaisaPe.`
-        });
-
-        res.json({ 
-            message: 'Referral completed successfully',
-            bonusAmount,
-            referrer: referrer.name,
-            referee: referee.name
-        });
-    } catch (error) {
-        res.status(500).json({ message: 'Error completing referral', error });
-    }
-};
-
-// ------------------ GET REFERRAL STATS ------------------
+// ------------------ GET REFERRAL STATS (Updated with Complete User Info) ------------------
 exports.getReferralStats = async (req, res) => {
     try {
-        const userId = req.session.user.id;
+        const userId = req.user.id; // Assuming you're using auth middleware
         const user = await User.findById(userId)
             .populate('pendingReferrals', 'name email')
-            .populate('completedReferrals', 'name email');
+            .populate('completedReferrals', 'name email')
+            .populate('referredBy', 'name email');
 
         if (!user) {
             return res.status(404).json({ message: 'User not found' });
@@ -390,12 +359,48 @@ exports.getReferralStats = async (req, res) => {
             referralCount: user.referralCount,
             referralEarnings: user.referralEarnings,
             pendingReferrals: user.pendingReferrals,
-            completedReferrals: user.completedReferrals
+            completedReferrals: user.completedReferrals,
+            referredBy: user.referredBy
         };
 
         res.json(referralStats);
     } catch (error) {
         res.status(500).json({ message: 'Error fetching referral stats', error });
+    }
+};
+
+// ------------------ LOGIN (Updated with Referral Info) ------------------
+exports.login = async (req, res) => {
+    try {
+        const { email, password } = req.body;
+        const user = await User.findOne({ email });
+
+        if (!user) return res.status(400).json({ message: 'User not found' });
+        if (user.password !== password) return res.status(400).json({ message: 'Incorrect password' });
+        if (!user.isVerified) return res.status(400).json({ message: 'Email not verified. Please verify OTP.' });
+
+        req.session.user = { 
+            id: user._id, 
+            email: user.email, 
+            name: user.name,
+            referralCode: user.referralCode,
+            referralCount: user.referralCount,
+            referralEarnings: user.referralEarnings
+        };
+        
+        res.json({ 
+            message: 'Login successful',
+            user: { 
+                name: user.name, 
+                email: user.email,
+                referralCode: user.referralCode,
+                referralCount: user.referralCount,
+                referralEarnings: user.referralEarnings,
+                referredBy: user.referredBy
+            }
+        });
+    } catch (error) {
+        res.status(500).json({ message: 'Error logging in', error });
     }
 };
 
@@ -424,38 +429,6 @@ exports.resendOTP = async (req, res) => {
         res.json({ message: 'OTP resent successfully.' });
     } catch (error) {
         res.status(500).json({ message: 'Error resending OTP', error });
-    }
-};
-
-// ------------------ LOGIN ------------------
-exports.login = async (req, res) => {
-    try {
-        const { email, password } = req.body;
-        const user = await User.findOne({ email });
-
-        if (!user) return res.status(400).json({ message: 'User not found' });
-        if (user.password !== password) return res.status(400).json({ message: 'Incorrect password' });
-        if (!user.isVerified) return res.status(400).json({ message: 'Email not verified. Please verify OTP.' });
-
-        req.session.user = { 
-            id: user._id, 
-            email: user.email, 
-            name: user.name,
-            referralCode: user.referralCode
-        };
-        
-        res.json({ 
-            message: 'Login successful',
-            user: { 
-                name: user.name, 
-                email: user.email,
-                referralCode: user.referralCode,
-                referralCount: user.referralCount,
-                referralEarnings: user.referralEarnings
-            }
-        });
-    } catch (error) {
-        res.status(500).json({ message: 'Error logging in', error });
     }
 };
 

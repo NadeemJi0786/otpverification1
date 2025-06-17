@@ -1,6 +1,7 @@
 const User = require('../models/User');
 const nodemailer = require('nodemailer');
 const crypto = require('crypto');
+const Referral = require('../models/Referral');
 require('dotenv').config();
 
 // Email Transporter Setup
@@ -14,6 +15,16 @@ const transporter = nodemailer.createTransport({
 
 // Helper: Generate OTP
 const generateOTP = () => crypto.randomInt(100000, 999999).toString();
+
+// Helper: Generate Referral Code
+const generateReferralCode = () => {
+    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+    let result = '';
+    for (let i = 0; i < 8; i++) {
+        result += chars.charAt(Math.floor(Math.random() * chars.length));
+    }
+    return result;
+};
 
 // Email Templates
 const emailTemplates = {
@@ -124,7 +135,7 @@ const emailTemplates = {
         </body>
         </html>
     `,
-    welcomeEmail: (name) => `
+    welcomeEmail: (name, referralCode) => `
         <!DOCTYPE html>
         <html>
         <head>
@@ -134,6 +145,8 @@ const emailTemplates = {
                 .content { padding: 30px; background-color: #f9f9f9; border-radius: 0 0 8px 8px; }
                 .footer { margin-top: 30px; font-size: 12px; color: #777; text-align: center; }
                 .button { background-color: #4CAF50; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; display: inline-block; margin-top: 15px; }
+                .referral-code { background-color: #fff; border: 2px solid #4CAF50; padding: 15px; text-align: center; margin: 20px 0; font-size: 20px; font-weight: bold; color: #4CAF50; }
+                .referral-bonus { background-color: #f0fff0; padding: 15px; border-radius: 5px; margin: 20px 0; }
             </style>
         </head>
         <body>
@@ -143,7 +156,18 @@ const emailTemplates = {
             <div class="content">
                 <p>Hi ${name},</p>
                 <p>Congratulations! Your account has been successfully verified and you're now part of the PaisaPe community.</p>
-                <p>We're excited to have you on board. You can now enjoy all the features of our platform.</p>
+                
+                <div class="referral-bonus">
+                    <h3>Your Referral Benefits</h3>
+                    <p>Invite friends and earn ₹100 for each successful referral when they sign up using your code and complete their first transaction.</p>
+                </div>
+                
+                <p>Your unique referral code:</p>
+                <div class="referral-code">
+                    ${referralCode}
+                </div>
+                
+                <p>Share this code with your friends and start earning!</p>
                 
                 <a href="#" class="button">Get Started</a>
                 
@@ -157,22 +181,89 @@ const emailTemplates = {
             </div>
         </body>
         </html>
+    `,
+    referralSuccess: (name, referredName, bonusAmount) => `
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <style>
+                body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px; }
+                .header { background-color: #FFA500; color: white; padding: 20px; text-align: center; border-radius: 8px 8px 0 0; }
+                .content { padding: 30px; background-color: #f9f9f9; border-radius: 0 0 8px 8px; }
+                .footer { margin-top: 30px; font-size: 12px; color: #777; text-align: center; }
+                .bonus-amount { font-size: 24px; color: #4CAF50; font-weight: bold; text-align: center; margin: 20px 0; }
+            </style>
+        </head>
+        <body>
+            <div class="header">
+                <h1>You've Earned a Referral Bonus!</h1>
+            </div>
+            <div class="content">
+                <p>Hi ${name},</p>
+                <p>Congratulations! Your friend ${referredName} has successfully joined PaisaPe using your referral code.</p>
+                
+                <div class="bonus-amount">
+                    ₹${bonusAmount} credited to your account!
+                </div>
+                
+                <p>Keep inviting more friends to earn more rewards. There's no limit to how much you can earn!</p>
+                
+                <p>Thank you for being a valuable part of the PaisaPe community.</p>
+                
+                <p>Best regards,<br>The PaisaPe Team</p>
+                
+                <div class="footer">
+                    <p>© ${new Date().getFullYear()} PaisaPe. All rights reserved.</p>
+                </div>
+            </div>
+        </body>
+        </html>
     `
 };
 
-// ------------------ REGISTER ------------------
+// ------------------ REGISTER (Updated with Referral System) ------------------
 exports.register = async (req, res) => {
     try {
-        const { name, email, password } = req.body;
+        const { name, email, password, referralCode } = req.body;
         let user = await User.findOne({ email });
 
         if (user) return res.status(400).json({ message: 'User already exists' });
 
         const otp = generateOTP();
         const otpExpiry = new Date(Date.now() + 10 * 60 * 1000);
+        const userReferralCode = generateReferralCode();
 
-        user = new User({ name, email, password, otp, otpExpiry });
+        user = new User({ 
+            name, 
+            email, 
+            password, 
+            otp, 
+            otpExpiry,
+            referralCode: userReferralCode,
+            referralCount: 0,
+            referralEarnings: 0
+        });
+
         await user.save();
+
+        // Handle referral if code was provided
+        if (referralCode) {
+            const referrer = await User.findOne({ referralCode });
+            if (referrer) {
+                // Create referral record
+                const referral = new Referral({
+                    referrer: referrer._id,
+                    referee: user._id,
+                    referralCodeUsed: referralCode,
+                    status: 'pending' // will change to completed after first transaction
+                });
+                await referral.save();
+
+                // Update referrer's pending referrals
+                referrer.pendingReferrals.push(user._id);
+                await referrer.save();
+            }
+        }
 
         await transporter.sendMail({
             from: `"PaisaPe" <${process.env.GMAIL_USER}>`,
@@ -182,13 +273,16 @@ exports.register = async (req, res) => {
             text: `Your OTP is: ${otp}`
         });
 
-        res.status(201).json({ message: 'User registered. Please verify OTP sent to email.' });
+        res.status(201).json({ 
+            message: 'User registered. Please verify OTP sent to email.',
+            referralCode: userReferralCode 
+        });
     } catch (error) {
         res.status(500).json({ message: 'Error registering user', error });
     }
 };
 
-// ------------------ VERIFY OTP ------------------
+// ------------------ VERIFY OTP (Updated with Referral Welcome Email) ------------------
 exports.verifyOTP = async (req, res) => {
     try {
         const { email, otp } = req.body;
@@ -206,18 +300,102 @@ exports.verifyOTP = async (req, res) => {
         user.otpExpiry = undefined;
         await user.save();
 
-        // Send welcome email
+        // Send welcome email with referral code
         await transporter.sendMail({
             from: `"PaisaPe" <${process.env.GMAIL_USER}>`,
             to: email,
             subject: 'Welcome to PaisaPe!',
-            html: emailTemplates.welcomeEmail(user.name),
-            text: `Welcome to PaisaPe, ${user.name}! Your account has been successfully verified.`
+            html: emailTemplates.welcomeEmail(user.name, user.referralCode),
+            text: `Welcome to PaisaPe, ${user.name}! Your account has been successfully verified. Your referral code: ${user.referralCode}`
         });
 
-        res.json({ message: 'Email verified successfully. You can now log in.' });
+        res.json({ 
+            message: 'Email verified successfully. You can now log in.',
+            referralCode: user.referralCode
+        });
     } catch (error) {
         res.status(500).json({ message: 'Error verifying OTP', error });
+    }
+};
+
+// ------------------ COMPLETE REFERRAL (When referee completes first transaction) ------------------
+exports.completeReferral = async (req, res) => {
+    try {
+        const { userId } = req.body;
+        const bonusAmount = 100; // ₹100 per referral
+
+        // Find referral record
+        const referral = await Referral.findOne({ 
+            referee: userId,
+            status: 'pending'
+        }).populate('referrer');
+
+        if (!referral) {
+            return res.status(400).json({ message: 'No pending referral found' });
+        }
+
+        // Update referral status
+        referral.status = 'completed';
+        referral.completedAt = new Date();
+        await referral.save();
+
+        // Update referrer's stats
+        const referrer = await User.findById(referral.referrer);
+        referrer.referralCount += 1;
+        referrer.referralEarnings += bonusAmount;
+        referrer.pendingReferrals.pull(userId);
+        referrer.completedReferrals.push(userId);
+        await referrer.save();
+
+        // Update referee's stats
+        const referee = await User.findById(userId);
+        referee.referredBy = referrer._id;
+        referee.referralBonusUsed = true;
+        await referee.save();
+
+        // Send email notification to referrer
+        await transporter.sendMail({
+            from: `"PaisaPe" <${process.env.GMAIL_USER}>`,
+            to: referrer.email,
+            subject: 'You Earned a Referral Bonus!',
+            html: emailTemplates.referralSuccess(referrer.name, referee.name, bonusAmount),
+            text: `Congratulations ${referrer.name}! You've earned ₹${bonusAmount} for referring ${referee.name} to PaisaPe.`
+        });
+
+        res.json({ 
+            message: 'Referral completed successfully',
+            bonusAmount,
+            referrer: referrer.name,
+            referee: referee.name
+        });
+    } catch (error) {
+        res.status(500).json({ message: 'Error completing referral', error });
+    }
+};
+
+// ------------------ GET REFERRAL STATS ------------------
+exports.getReferralStats = async (req, res) => {
+    try {
+        const userId = req.session.user.id;
+        const user = await User.findById(userId)
+            .populate('pendingReferrals', 'name email')
+            .populate('completedReferrals', 'name email');
+
+        if (!user) {
+            return res.status(404).json({ message: 'User not found' });
+        }
+
+        const referralStats = {
+            referralCode: user.referralCode,
+            referralCount: user.referralCount,
+            referralEarnings: user.referralEarnings,
+            pendingReferrals: user.pendingReferrals,
+            completedReferrals: user.completedReferrals
+        };
+
+        res.json(referralStats);
+    } catch (error) {
+        res.status(500).json({ message: 'Error fetching referral stats', error });
     }
 };
 
@@ -259,10 +437,22 @@ exports.login = async (req, res) => {
         if (user.password !== password) return res.status(400).json({ message: 'Incorrect password' });
         if (!user.isVerified) return res.status(400).json({ message: 'Email not verified. Please verify OTP.' });
 
-        req.session.user = { id: user._id, email: user.email, name: user.name };
+        req.session.user = { 
+            id: user._id, 
+            email: user.email, 
+            name: user.name,
+            referralCode: user.referralCode
+        };
+        
         res.json({ 
             message: 'Login successful',
-            user: { name: user.name, email: user.email } // Send user data to frontend
+            user: { 
+                name: user.name, 
+                email: user.email,
+                referralCode: user.referralCode,
+                referralCount: user.referralCount,
+                referralEarnings: user.referralEarnings
+            }
         });
     } catch (error) {
         res.status(500).json({ message: 'Error logging in', error });
@@ -293,9 +483,12 @@ exports.logout = (req, res) => {
 
 // ------------------ DASHBOARD ------------------
 exports.dashboard = async (req, res) => {
+    const user = await User.findById(req.session.user.id)
+        .select('-password -otp -otpExpiry');
+        
     res.json({ 
-        message: `Welcome to the dashboard, ${req.session.user.name}`,
-        user: req.session.user 
+        message: `Welcome to the dashboard, ${user.name}`,
+        user: user 
     });
 };
 

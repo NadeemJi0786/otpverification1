@@ -2,6 +2,7 @@ const User = require('../models/User');
 const nodemailer = require('nodemailer');
 const crypto = require('crypto');
 const Referral = require('../models/Referral');
+const jwt = require('jsonwebtoken');
 require('dotenv').config();
 
 // Email Transporter Setup
@@ -24,6 +25,20 @@ const generateReferralCode = () => {
         result += chars.charAt(Math.floor(Math.random() * chars.length));
     }
     return result;
+};
+
+// Generate JWT Token
+const generateToken = (user) => {
+    return jwt.sign(
+        { 
+            id: user._id, 
+            email: user.email, 
+            name: user.name,
+            referralCode: user.referralCode
+        },
+        process.env.JWT_SECRET,
+        { expiresIn: '1d' }
+    );
 };
 
 // Email Templates
@@ -221,13 +236,16 @@ const emailTemplates = {
     `
 };
 
-// ------------------ REGISTER (Updated with Referral System) ------------------
+// ------------------ REGISTER ------------------
 exports.register = async (req, res) => {
     try {
         const { name, email, password, referralCode } = req.body;
         let user = await User.findOne({ email });
 
-        if (user) return res.status(400).json({ message: 'User already exists' });
+        if (user) return res.status(400).json({ 
+            success: false,
+            message: 'User already exists' 
+        });
 
         const otp = generateOTP();
         const otpExpiry = new Date(Date.now() + 10 * 60 * 1000);
@@ -250,16 +268,14 @@ exports.register = async (req, res) => {
         if (referralCode) {
             const referrer = await User.findOne({ referralCode });
             if (referrer) {
-                // Create referral record
                 const referral = new Referral({
                     referrer: referrer._id,
                     referee: user._id,
                     referralCodeUsed: referralCode,
-                    status: 'pending' // will change to completed after first transaction
+                    status: 'pending'
                 });
                 await referral.save();
 
-                // Update referrer's pending referrals
                 referrer.pendingReferrals.push(user._id);
                 await referrer.save();
             }
@@ -274,25 +290,39 @@ exports.register = async (req, res) => {
         });
 
         res.status(201).json({ 
+            success: true,
             message: 'User registered. Please verify OTP sent to email.',
             referralCode: userReferralCode 
         });
     } catch (error) {
-        res.status(500).json({ message: 'Error registering user', error });
+        res.status(500).json({ 
+            success: false,
+            message: 'Error registering user', 
+            error: error.message 
+        });
     }
 };
 
-// ------------------ VERIFY OTP (Updated with Referral Welcome Email) ------------------
+// ------------------ VERIFY OTP ------------------
 exports.verifyOTP = async (req, res) => {
     try {
         const { email, otp } = req.body;
         const user = await User.findOne({ email });
 
-        if (!user) return res.status(400).json({ message: 'User not found' });
-        if (user.isVerified) return res.status(400).json({ message: 'User already verified' });
+        if (!user) return res.status(400).json({ 
+            success: false,
+            message: 'User not found' 
+        });
+        if (user.isVerified) return res.status(400).json({ 
+            success: false,
+            message: 'User already verified' 
+        });
 
         if (user.otp !== otp || user.otpExpiry < new Date()) {
-            return res.status(400).json({ message: 'Invalid or expired OTP' });
+            return res.status(400).json({ 
+                success: false,
+                message: 'Invalid or expired OTP' 
+            });
         }
 
         user.isVerified = true;
@@ -300,7 +330,6 @@ exports.verifyOTP = async (req, res) => {
         user.otpExpiry = undefined;
         await user.save();
 
-        // Send welcome email with referral code
         await transporter.sendMail({
             from: `"PaisaPe" <${process.env.GMAIL_USER}>`,
             to: email,
@@ -310,36 +339,112 @@ exports.verifyOTP = async (req, res) => {
         });
 
         res.json({ 
+            success: true,
             message: 'Email verified successfully. You can now log in.',
             referralCode: user.referralCode
         });
     } catch (error) {
-        res.status(500).json({ message: 'Error verifying OTP', error });
+        res.status(500).json({ 
+            success: false,
+            message: 'Error verifying OTP', 
+            error: error.message 
+        });
     }
 };
 
-// ------------------ COMPLETE REFERRAL (When referee completes first transaction) ------------------
+// ------------------ LOGIN (JWT Implementation) ------------------
+exports.login = async (req, res) => {
+    try {
+        const { email, password } = req.body;
+        const user = await User.findOne({ email });
+
+        if (!user) return res.status(400).json({ 
+            success: false,
+            message: 'User not found' 
+        });
+        
+        if (user.password !== password) return res.status(400).json({ 
+            success: false,
+            message: 'Incorrect password' 
+        });
+        
+        if (!user.isVerified) return res.status(400).json({ 
+            success: false,
+            message: 'Email not verified. Please verify OTP.' 
+        });
+
+        const token = generateToken(user);
+        
+        res.json({ 
+            success: true,
+            message: 'Login successful',
+            token,
+            user: { 
+                name: user.name, 
+                email: user.email,
+                referralCode: user.referralCode,
+                referralCount: user.referralCount,
+                referralEarnings: user.referralEarnings
+            }
+        });
+    } catch (error) {
+        res.status(500).json({ 
+            success: false,
+            message: 'Error logging in', 
+            error: error.message 
+        });
+    }
+};
+
+// ------------------ CURRENT USER (JWT Implementation) ------------------
+exports.currentUser = async (req, res) => {
+    try {
+        const user = await User.findById(req.user.id)
+            .select('-password -otp -otpExpiry');
+
+        if (!user) {
+            return res.status(404).json({ 
+                success: false,
+                message: 'User not found' 
+            });
+        }
+
+        res.json({ 
+            success: true,
+            isAuthenticated: true,
+            user 
+        });
+    } catch (error) {
+        res.status(500).json({ 
+            success: false,
+            message: 'Error fetching user data', 
+            error: error.message 
+        });
+    }
+};
+
+// ------------------ COMPLETE REFERRAL ------------------
 exports.completeReferral = async (req, res) => {
     try {
         const { userId } = req.body;
-        const bonusAmount = 100; // ₹100 per referral
+        const bonusAmount = 100;
 
-        // Find referral record
         const referral = await Referral.findOne({ 
             referee: userId,
             status: 'pending'
         }).populate('referrer');
 
         if (!referral) {
-            return res.status(400).json({ message: 'No pending referral found' });
+            return res.status(400).json({ 
+                success: false,
+                message: 'No pending referral found' 
+            });
         }
 
-        // Update referral status
         referral.status = 'completed';
         referral.completedAt = new Date();
         await referral.save();
 
-        // Update referrer's stats
         const referrer = await User.findById(referral.referrer);
         referrer.referralCount += 1;
         referrer.referralEarnings += bonusAmount;
@@ -347,13 +452,11 @@ exports.completeReferral = async (req, res) => {
         referrer.completedReferrals.push(userId);
         await referrer.save();
 
-        // Update referee's stats
         const referee = await User.findById(userId);
         referee.referredBy = referrer._id;
         referee.referralBonusUsed = true;
         await referee.save();
 
-        // Send email notification to referrer
         await transporter.sendMail({
             from: `"PaisaPe" <${process.env.GMAIL_USER}>`,
             to: referrer.email,
@@ -363,26 +466,33 @@ exports.completeReferral = async (req, res) => {
         });
 
         res.json({ 
+            success: true,
             message: 'Referral completed successfully',
             bonusAmount,
             referrer: referrer.name,
             referee: referee.name
         });
     } catch (error) {
-        res.status(500).json({ message: 'Error completing referral', error });
+        res.status(500).json({ 
+            success: false,
+            message: 'Error completing referral', 
+            error: error.message 
+        });
     }
 };
 
 // ------------------ GET REFERRAL STATS ------------------
 exports.getReferralStats = async (req, res) => {
     try {
-        const userId = req.session.user.id;
-        const user = await User.findById(userId)
+        const user = await User.findById(req.user.id)
             .populate('pendingReferrals', 'name email')
             .populate('completedReferrals', 'name email');
 
         if (!user) {
-            return res.status(404).json({ message: 'User not found' });
+            return res.status(404).json({ 
+                success: false,
+                message: 'User not found' 
+            });
         }
 
         const referralStats = {
@@ -393,9 +503,16 @@ exports.getReferralStats = async (req, res) => {
             completedReferrals: user.completedReferrals
         };
 
-        res.json(referralStats);
+        res.json({ 
+            success: true,
+            data: referralStats 
+        });
     } catch (error) {
-        res.status(500).json({ message: 'Error fetching referral stats', error });
+        res.status(500).json({ 
+            success: false,
+            message: 'Error fetching referral stats', 
+            error: error.message 
+        });
     }
 };
 
@@ -405,8 +522,14 @@ exports.resendOTP = async (req, res) => {
         const { email } = req.body;
         const user = await User.findOne({ email });
 
-        if (!user) return res.status(400).json({ message: 'User not found' });
-        if (user.isVerified) return res.status(400).json({ message: 'User already verified' });
+        if (!user) return res.status(400).json({ 
+            success: false,
+            message: 'User not found' 
+        });
+        if (user.isVerified) return res.status(400).json({ 
+            success: false,
+            message: 'User already verified' 
+        });
 
         const otp = generateOTP();
         user.otp = otp;
@@ -421,63 +544,149 @@ exports.resendOTP = async (req, res) => {
             text: `Your new OTP is: ${otp}`
         });
 
-        res.json({ message: 'OTP resent successfully.' });
+        res.json({ 
+            success: true,
+            message: 'OTP resent successfully.' 
+        });
     } catch (error) {
-        res.status(500).json({ message: 'Error resending OTP', error });
+        res.status(500).json({ 
+            success: false,
+            message: 'Error resending OTP', 
+            error: error.message 
+        });
     }
 };
 
-// ------------------ LOGIN ------------------
-exports.login = async (req, res) => {
+// ------------------ DASHBOARD ------------------
+exports.dashboard = async (req, res) => {
     try {
-        const { email, password } = req.body;
+        const user = await User.findById(req.user.id)
+            .select('-password -otp -otpExpiry');
+            
+        res.json({ 
+            success: true,
+            message: `Welcome to the dashboard, ${user.name}`,
+            user 
+        });
+    } catch (error) {
+        res.status(500).json({ 
+            success: false,
+            message: 'Error accessing dashboard', 
+            error: error.message 
+        });
+    }
+};
+
+// ------------------ FORGOT PASSWORD ------------------
+exports.forgotPassword = async (req, res) => {
+    try {
+        const { email } = req.body;
         const user = await User.findOne({ email });
 
-        if (!user) return res.status(400).json({ message: 'User not found' });
-        if (user.password !== password) return res.status(400).json({ message: 'Incorrect password' });
-        if (!user.isVerified) return res.status(400).json({ message: 'Email not verified. Please verify OTP.' });
+        if (!user) return res.status(400).json({ 
+            success: false,
+            message: 'User not found' 
+        });
 
-        req.session.user = { 
-            id: user._id, 
-            email: user.email, 
-            name: user.name,
-            referralCode: user.referralCode
-        };
-        
+        const otp = generateOTP();
+        user.otp = otp;
+        user.otpExpiry = new Date(Date.now() + 10 * 60 * 1000);
+        await user.save();
+
+        await transporter.sendMail({
+            from: `"PaisaPe" <${process.env.GMAIL_USER}>`,
+            to: email,
+            subject: 'Password Reset OTP - PaisaPe',
+            html: emailTemplates.passwordReset(otp, user.name),
+            text: `Your OTP to reset password is: ${otp}`
+        });
+
         res.json({ 
-            message: 'Login successful',
-            user: { 
-                name: user.name, 
-                email: user.email,
-                referralCode: user.referralCode,
-                referralCount: user.referralCount,
-                referralEarnings: user.referralEarnings
-            }
+            success: true,
+            message: 'OTP sent to email for password reset' 
         });
     } catch (error) {
-        res.status(500).json({ message: 'Error logging in', error });
+        res.status(500).json({ 
+            success: false,
+            message: 'Error sending reset OTP', 
+            error: error.message 
+        });
     }
 };
 
-// ------------------ CURRENT USER ------------------
-exports.currentUser = (req, res) => {
-    if (req.session.user) {
-        res.json({ 
-            isAuthenticated: true,
-            user: req.session.user 
+// ------------------ VERIFY RESET OTP ------------------
+exports.verifyResetOTP = async (req, res) => {
+    try {
+        const { email, otp } = req.body;
+        const user = await User.findOne({ email });
+
+        if (!user) return res.status(400).json({ 
+            success: false,
+            message: 'User not found' 
         });
-    } else {
+        if (user.otp !== otp || user.otpExpiry < new Date()) {
+            return res.status(400).json({ 
+                success: false,
+                message: 'Invalid or expired OTP' 
+            });
+        }
+
+        user.isResetVerified = true;
+        user.otp = undefined;
+        user.otpExpiry = undefined;
+        await user.save();
+
         res.json({ 
-            isAuthenticated: false 
+            success: true,
+            message: 'OTP verified. You can now reset your password.' 
+        });
+    } catch (error) {
+        res.status(500).json({ 
+            success: false,
+            message: 'Error verifying reset OTP', 
+            error: error.message 
+        });
+    }
+};
+
+// ------------------ RESET PASSWORD ------------------
+exports.resetPassword = async (req, res) => {
+    try {
+        const { email, newPassword } = req.body;
+        const user = await User.findOne({ email });
+
+        if (!user) return res.status(400).json({ 
+            success: false,
+            message: 'User not found' 
+        });
+        if (!user.isResetVerified) return res.status(403).json({ 
+            success: false,
+            message: 'OTP verification required' 
+        });
+
+        user.password = newPassword;
+        user.isResetVerified = false;
+        await user.save();
+
+        res.json({ 
+            success: true,
+            message: 'Password reset successful. You can now log in.' 
+        });
+    } catch (error) {
+        res.status(500).json({ 
+            success: false,
+            message: 'Error resetting password', 
+            error: error.message 
         });
     }
 };
 
 // ------------------ LOGOUT ------------------
 exports.logout = (req, res) => {
-    req.session.destroy((err) => {
-        if (err) return res.status(500).json({ message: 'Error logging out' });
-        res.json({ message: 'Logged out successfully' });
+    // With JWT, logout is handled client-side by removing the token
+    res.json({ 
+        success: true,
+        message: 'Logout successful.' 
     });
 };
 

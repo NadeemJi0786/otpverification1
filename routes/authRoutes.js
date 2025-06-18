@@ -1,36 +1,27 @@
 const express = require('express');
-const {
-    register,
-    verifyOTP,
-    resendOTP,
-    login,
-    logout,
-    dashboard,
-    forgotPassword,
-    verifyResetOTP,
-    resetPassword,
-    currentUser,
-    getReferralStats
-} = require('../controllers/authController');
-const authMiddleware = require('../middleware/authMiddleware');
-
 const router = express.Router();
 
-// Auth routes
-router.post('/register', register);
-router.post('/verify-otp', verifyOTP);
-router.post('/resend-otp', resendOTP);
-router.post('/login', login);
-router.post('/logout', logout);
-router.get('/dashboard', authMiddleware, dashboard);
-router.get('/current-user', authMiddleware, currentUser);
+// Controllers import karo (ab alag files mein hai)
+const authController = require('../controllers/authController'); // Login, Register, OTP, Password Reset
+const referralController = require('../controllers/referralController'); // Referral system
+const userController = require('../controllers/userController'); // Dashboard, Profile
+const authMiddleware = require('../middleware/authMiddleware'); // JWT/ Session check
 
-// Forgot Password routes
-router.post('/forgot-password', forgotPassword);
-router.post('/verify-reset-otp', verifyResetOTP);
-router.post('/reset-password', resetPassword);
+// 🔑 Authentication Routes (No login required)
+router.post('/register', authController.register); // ✅ Same as before
+router.post('/verify-otp', authController.verifyOTP); // ✅ Same as before
+router.post('/resend-otp', authController.resendOTP); // ✅ Same as before
+router.post('/login', authController.login); // ✅ Same as before
+router.post('/logout', authController.logout); // ✅ Same as before
 
-// Referral System routes
-router.get('/referral-stats', authMiddleware, getReferralStats);
+// 🔄 Password Reset Routes
+router.post('/forgot-password', authController.forgotPassword); // ✅ Same as before
+router.post('/verify-reset-otp', authController.verifyResetOTP); // ✅ Same as before
+router.post('/reset-password', authController.resetPassword); // ✅ Same as before
+
+// 🔒 Protected Routes (Login required)
+router.get('/current-user', authMiddleware, authController.currentUser); // ✅ Same as before
+router.get('/dashboard', authMiddleware, userController.dashboard); // ✅ Same as before
+router.get('/referral-stats', authMiddleware, referralController.getReferralStats); // ✅ Same as before
 
 module.exports = router;

@@ -18,14 +18,15 @@ const referralSchema = new mongoose.Schema({
     status: {
         type: String,
         enum: ['pending', 'completed'],
-        default: 'pending'
+        default: 'completed' // Changed to default 'completed' based on code 3 implementation
     },
     bonusAmount: {
         type: Number,
-        default: 100 // ₹100 per referral
+        default: 100
     },
     completedAt: {
-        type: Date
+        type: Date,
+        default: Date.now // Added default value
     }
 }, { timestamps: true });
 

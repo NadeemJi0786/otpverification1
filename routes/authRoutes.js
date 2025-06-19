@@ -17,7 +17,6 @@ router.post('/logout', authController.logout); // ✅ Same as before
 
 // 🔄 Password Reset Routes (Now using passwordController)
 router.post('/forgot-password', passwordController.forgotPassword); // CHANGED to passwordController
-router.post('/verify-reset-otp', passwordController.verifyResetOTP); // CHANGED to passwordController
 router.post('/reset-password', passwordController.resetPassword); // CHANGED to passwordController
 
 // 🔒 Protected Routes (Login required)

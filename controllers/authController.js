@@ -72,13 +72,13 @@ exports.register = async (req, res) => {
         referrer: referrer._id,
         referee: user._id,
         referralCodeUsed: referralCode,
-        status: 'pending', // Set to pending initially
+        status: 'pending',
         bonusAmount: 100
       });
 
       await referral.save();
 
-      // Set referredBy for new user (but don't update counts yet)
+      // Set referredBy for new user
       user.referredBy = referrer._id;
     }
 
@@ -114,26 +114,50 @@ exports.register = async (req, res) => {
 exports.verifyOTP = async (req, res) => {
   try {
     const { email, otp } = req.body;
-    const user = await User.findOne({ email });
+    
+    // Validate input
+    if (!email || !otp) {
+      return res.status(400).json({ 
+        success: false,
+        message: 'Email and OTP are required' 
+      });
+    }
 
+    const user = await User.findOne({ email });
     if (!user) {
       return res.status(404).json({ 
         success: false,
-        message: 'User not found' 
+        message: 'User not found with this email' 
       });
     }
     
     if (user.isVerified) {
       return res.status(400).json({ 
         success: false,
-        message: 'User already verified' 
+        message: 'This account is already verified' 
       });
     }
 
-    if (user.otp !== otp || user.otpExpiry < new Date()) {
+    // Check if OTP exists and is not expired
+    if (!user.otp || !user.otpExpiry) {
+      return res.status(400).json({
+        success: false,
+        message: 'No active OTP found. Please request a new OTP'
+      });
+    }
+
+    // Verify OTP and expiry
+    if (user.otp !== otp) {
       return res.status(400).json({ 
         success: false,
-        message: 'Invalid or expired OTP' 
+        message: 'Invalid OTP code' 
+      });
+    }
+
+    if (user.otpExpiry < new Date()) {
+      return res.status(400).json({ 
+        success: false,
+        message: 'OTP has expired. Please request a new OTP' 
       });
     }
 
@@ -151,23 +175,14 @@ exports.verifyOTP = async (req, res) => {
         { $set: { status: 'completed', completedAt: new Date() } }
       );
       
-      // Update referrer's stats
+      // Update referrer's stats (only increment)
       await User.findByIdAndUpdate(user.referredBy, {
-        $inc: { referralCount: 1, referralEarnings: 100 },
-        $push: { 
-          completedReferrals: {
-            userId: user._id,
-            name: user.name,
-            email: user.email,
-            joinedAt: new Date()
-          }
-        }
+        $inc: { referralCount: 1, referralEarnings: 100 }
       });
 
-      // Get referrer details for email
+      // Send bonus email to referrer
       const referrer = await User.findById(user.referredBy);
       if (referrer) {
-        // Send bonus email to referrer
         await transporter.sendMail({
           from: `"PaisaPe" <${process.env.GMAIL_USER}>`,
           to: referrer.email,
@@ -178,112 +193,37 @@ exports.verifyOTP = async (req, res) => {
       }
     }
 
-    // Send welcome email to new user
+    // Send welcome email
     await transporter.sendMail({
       from: `"PaisaPe" <${process.env.GMAIL_USER}>`,
       to: email,
       subject: 'Welcome to PaisaPe!',
       html: emailTemplates.welcomeEmail(user.name, user.referralCode),
-      text: `Welcome to PaisaPe, ${user.name}! Your referral code: ${user.referralCode}`
+      text: `Welcome to PaisaPe, ${user.name}!`
     });
 
     res.json({ 
       success: true,
-      message: 'Email verified successfully',
-      referralCode: user.referralCode
+      message: 'Email verified successfully!',
+      user: {
+        name: user.name,
+        email: user.email,
+        referralCode: user.referralCode,
+        referralCount: user.referralCount,
+        referralEarnings: user.referralEarnings
+      }
     });
 
   } catch (error) {
-    console.error('OTP verification error:', error);
-    res.status(500).json({ 
-      success: false,
-      message: 'Error verifying OTP',
-      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    console.error('OTP verification error:', {
+      message: error.message,
+      stack: error.stack,
+      requestBody: req.body
     });
-  }
-};
-
-// ... [rest of the controller methods remain exactly the same as in your original code] ...
-exports.verifyOTP = async (req, res) => {
-  try {
-    const { email, otp } = req.body;
-    const user = await User.findOne({ email });
-
-    if (!user) {
-      return res.status(404).json({ 
-        success: false,
-        message: 'User not found' 
-      });
-    }
     
-    if (user.isVerified) {
-      return res.status(400).json({ 
-        success: false,
-        message: 'User already verified' 
-      });
-    }
-
-    if (user.otp !== otp || user.otpExpiry < new Date()) {
-      return res.status(400).json({ 
-        success: false,
-        message: 'Invalid or expired OTP' 
-      });
-    }
-
-    user.isVerified = true;
-    user.otp = undefined;
-    user.otpExpiry = undefined;
-    await user.save();
-
-    // If user was referred, update referral status
-    if (user.referredBy) {
-      await Referral.updateOne(
-        { referee: user._id },
-        { $set: { status: 'completed' } }
-      );
-      
-      const referrer = await User.findById(user.referredBy);
-      if (referrer) {
-        referrer.referralCount += 1;
-        referrer.referralEarnings += 100;
-        referrer.completedReferrals.push({
-          userId: user._id,
-          name: user.name,
-          email: user.email,
-          joinedAt: new Date()
-        });
-        await referrer.save();
-
-        // Send bonus email to referrer
-        await transporter.sendMail({
-          from: `"PaisaPe" <${process.env.GMAIL_USER}>`,
-          to: referrer.email,
-          subject: 'Referral Bonus Earned!',
-          html: emailTemplates.referralSuccess(referrer.name, user.name, 100),
-          text: `Congratulations ${referrer.name}! You earned ₹100 for referring ${user.name}`
-        });
-      }
-    }
-
-    await transporter.sendMail({
-      from: `"PaisaPe" <${process.env.GMAIL_USER}>`,
-      to: email,
-      subject: 'Welcome to PaisaPe!',
-      html: emailTemplates.welcomeEmail(user.name, user.referralCode),
-      text: `Welcome to PaisaPe, ${user.name}! Your referral code: ${user.referralCode}`
-    });
-
-    res.json({ 
-      success: true,
-      message: 'Email verified successfully',
-      referralCode: user.referralCode
-    });
-
-  } catch (error) {
-    console.error('OTP verification error:', error);
     res.status(500).json({ 
       success: false,
-      message: 'Error verifying OTP',
+      message: 'OTP verification failed. Please try again.',
       error: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
   }

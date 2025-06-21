@@ -1,18 +1,21 @@
-// controllers/passwordController.js
 const User = require('../models/User');
 const { transporter, emailTemplates, generateOTP } = require('../helpers/emailHelper');
+const jwt = require('jsonwebtoken');
 
 exports.forgotPassword = async (req, res) => {
     try {
         const { email } = req.body;
         const user = await User.findOne({ email });
 
-        if (!user) return res.status(400).json({ message: 'User not found' });
+        if (!user) return res.status(400).json({ 
+            success: false,
+            message: 'Ye email wala user nahi mila' 
+        });
 
         const otp = generateOTP();
         user.otp = otp;
         user.otpExpiry = new Date(Date.now() + 10 * 60 * 1000);
-        user.isResetVerified = false; // Explicitly set to false
+        user.isResetVerified = false;
         await user.save();
 
         await transporter.sendMail({
@@ -20,12 +23,19 @@ exports.forgotPassword = async (req, res) => {
             to: email,
             subject: 'Password Reset OTP - PaisaPe',
             html: emailTemplates.passwordReset(otp, user.name),
-            text: `Your OTP to reset password is: ${otp}`
+            text: `Password reset karne ke liye aapka OTP hai: ${otp}`
         });
 
-        res.json({ message: 'OTP sent to email for password reset' });
+        res.json({ 
+            success: true,
+            message: 'Password reset ka OTP email pe bhej diya gaya' 
+        });
     } catch (error) {
-        res.status(500).json({ message: 'Error sending reset OTP', error });
+        res.status(500).json({ 
+            success: false,
+            message: 'OTP bhejne mein error aaya',
+            error: process.env.NODE_ENV === 'development' ? error.message : undefined
+        });
     }
 };
 
@@ -35,35 +45,63 @@ exports.resetPassword = async (req, res) => {
         const { email, otp, newPassword } = req.body;
         const user = await User.findOne({ email });
 
-        if (!user) return res.status(400).json({ message: 'User not found' });
+        if (!user) return res.status(400).json({ 
+            success: false,
+            message: 'User nahi mila' 
+        });
         
-        // Verify OTP first
+        // OTP verify karo
         if (user.otp !== otp || user.otpExpiry < new Date()) {
-            return res.status(400).json({ message: 'Invalid or expired OTP' });
+            return res.status(400).json({ 
+                success: false,
+                message: 'Galat ya expire ho gaya OTP' 
+            });
         }
 
-        // If OTP is valid, proceed with password reset
+        // Password reset karo
         user.password = newPassword;
         user.isResetVerified = true;
         user.otp = undefined;
         user.otpExpiry = undefined;
         await user.save();
 
-        res.json({ message: 'Password reset successful. You can now log in.' });
+        // New token generate karo (optional)
+        const token = jwt.sign(
+            { id: user._id, email: user.email },
+            process.env.JWT_SECRET,
+            { expiresIn: '30d' }
+        );
+
+        res.json({ 
+            success: true,
+            message: 'Password reset ho gaya. Ab login kar sakte ho.',
+            token // Optional: agar turant login karna hai toh
+        });
     } catch (error) {
-        res.status(500).json({ message: 'Error resetting password', error });
+        res.status(500).json({ 
+            success: false,
+            message: 'Password reset mein error aaya',
+            error: process.env.NODE_ENV === 'development' ? error.message : undefined
+        });
     }
 };
 
-// Keep verifyResetOTP for backward compatibility (but it's not needed in your flow)
+// Backward compatibility ke liye (optional)
 exports.verifyResetOTP = async (req, res) => {
     try {
         const { email, otp } = req.body;
         const user = await User.findOne({ email });
 
-        if (!user) return res.status(400).json({ message: 'User not found' });
+        if (!user) return res.status(400).json({ 
+            success: false,
+            message: 'User nahi mila' 
+        });
+        
         if (user.otp !== otp || user.otpExpiry < new Date()) {
-            return res.status(400).json({ message: 'Invalid or expired OTP' });
+            return res.status(400).json({ 
+                success: false,
+                message: 'Galat ya expire ho gaya OTP' 
+            });
         }
 
         user.isResetVerified = true;
@@ -71,8 +109,15 @@ exports.verifyResetOTP = async (req, res) => {
         user.otpExpiry = undefined;
         await user.save();
 
-        res.json({ message: 'OTP verified. You can now reset your password.' });
+        res.json({ 
+            success: true,
+            message: 'OTP verify ho gaya. Ab password reset kar sakte ho.' 
+        });
     } catch (error) {
-        res.status(500).json({ message: 'Error verifying reset OTP', error });
+        res.status(500).json({ 
+            success: false,
+            message: 'OTP verify karne mein error aaya',
+            error: process.env.NODE_ENV === 'development' ? error.message : undefined
+        });
     }
 };

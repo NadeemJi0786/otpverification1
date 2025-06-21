@@ -1,5 +1,6 @@
 const User = require('../models/User');
 const Referral = require('../models/Referral');
+const jwt = require('jsonwebtoken');
 const { transporter, emailTemplates, generateOTP } = require('../helpers/emailHelper');
 
 // Generate secure referral code
@@ -12,6 +13,20 @@ const generateReferralCode = () => {
   return result;
 };
 
+// Generate JWT Token
+const generateToken = (user) => {
+  return jwt.sign(
+    { 
+      id: user._id, 
+      email: user.email,
+      name: user.name,
+      referralCode: user.referralCode 
+    },
+    process.env.JWT_SECRET,
+    { expiresIn: '30d' }
+  );
+};
+
 exports.register = async (req, res) => {
   try {
     const { name, email, password, referralCode } = req.body;
@@ -20,7 +35,7 @@ exports.register = async (req, res) => {
     if (!name || !email || !password) {
       return res.status(400).json({ 
         success: false,
-        message: 'Name, email and password are required' 
+        message: 'Name, email aur password required hai' 
       });
     }
 
@@ -29,7 +44,7 @@ exports.register = async (req, res) => {
     if (existingUser) {
       return res.status(409).json({ 
         success: false,
-        message: 'User already exists' 
+        message: 'Ye user pehle se exist karta hai' 
       });
     }
 
@@ -48,26 +63,24 @@ exports.register = async (req, res) => {
       referralCode: userReferralCode
     });
 
-    // Process referral if code provided
+    // Referral process
     if (referralCode) {
       const referrer = await User.findOne({ referralCode });
       
       if (!referrer) {
         return res.status(400).json({
           success: false,
-          message: 'Invalid referral code'
+          message: 'Galat referral code hai'
         });
       }
 
-      // Prevent self-referral
       if (referrer.email === email) {
         return res.status(400).json({
           success: false,
-          message: 'You cannot use your own referral code'
+          message: 'Apna khud ka referral code use nahi kar sakte'
         });
       }
 
-      // Create pending referral record
       const referral = new Referral({
         referrer: referrer._id,
         referee: user._id,
@@ -77,12 +90,9 @@ exports.register = async (req, res) => {
       });
 
       await referral.save();
-
-      // Set referredBy for new user
       user.referredBy = referrer._id;
     }
 
-    // Save the user
     await user.save();
 
     // Send OTP email
@@ -91,12 +101,12 @@ exports.register = async (req, res) => {
       to: email,
       subject: 'OTP Verification - PaisaPe',
       html: emailTemplates.otpVerification(otp, name),
-      text: `Your OTP is: ${otp}`
+      text: `Aapka OTP hai: ${otp}`
     });
 
     res.status(201).json({ 
       success: true,
-      message: 'User registered. Please verify OTP sent to email.',
+      message: 'User register ho gaya. OTP verify karo.',
       referralCode: userReferralCode,
       email: user.email
     });
@@ -105,7 +115,7 @@ exports.register = async (req, res) => {
     console.error('Registration error:', error);
     res.status(500).json({ 
       success: false,
-      message: 'Registration failed. Please try again.',
+      message: 'Registration fail ho gaya. Phir se try karo.',
       error: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
   }
@@ -115,11 +125,10 @@ exports.verifyOTP = async (req, res) => {
   try {
     const { email, otp } = req.body;
     
-    // Validate input
     if (!email || !otp) {
       return res.status(400).json({ 
         success: false,
-        message: 'Email and OTP are required' 
+        message: 'Email aur OTP dono required hai' 
       });
     }
 
@@ -127,37 +136,35 @@ exports.verifyOTP = async (req, res) => {
     if (!user) {
       return res.status(404).json({ 
         success: false,
-        message: 'User not found with this email' 
+        message: 'Ye email wala user nahi mila' 
       });
     }
     
     if (user.isVerified) {
       return res.status(400).json({ 
         success: false,
-        message: 'This account is already verified' 
+        message: 'Ye account pehle hi verify ho chuka hai' 
       });
     }
 
-    // Check if OTP exists and is not expired
     if (!user.otp || !user.otpExpiry) {
       return res.status(400).json({
         success: false,
-        message: 'No active OTP found. Please request a new OTP'
+        message: 'OTP nahi mila. Naya OTP mangao'
       });
     }
 
-    // Verify OTP and expiry
     if (user.otp !== otp) {
       return res.status(400).json({ 
         success: false,
-        message: 'Invalid OTP code' 
+        message: 'Galat OTP code' 
       });
     }
 
     if (user.otpExpiry < new Date()) {
       return res.status(400).json({ 
         success: false,
-        message: 'OTP has expired. Please request a new OTP' 
+        message: 'OTP expire ho gaya. Naya OTP mangao' 
       });
     }
 
@@ -167,44 +174,45 @@ exports.verifyOTP = async (req, res) => {
     user.otpExpiry = undefined;
     await user.save();
 
-    // Process referral only after successful verification
+    // Process referral
     if (user.referredBy) {
-      // Update referral status to completed
       await Referral.findOneAndUpdate(
         { referee: user._id },
         { $set: { status: 'completed', completedAt: new Date() } }
       );
       
-      // Update referrer's stats (only increment)
       await User.findByIdAndUpdate(user.referredBy, {
         $inc: { referralCount: 1, referralEarnings: 100 }
       });
 
-      // Send bonus email to referrer
       const referrer = await User.findById(user.referredBy);
       if (referrer) {
         await transporter.sendMail({
           from: `"PaisaPe" <${process.env.GMAIL_USER}>`,
           to: referrer.email,
-          subject: 'Referral Bonus Earned!',
+          subject: 'Referral Bonus Mil Gaya!',
           html: emailTemplates.referralSuccess(referrer.name, user.name, 100),
-          text: `Congratulations ${referrer.name}! You earned ₹100 for referring ${user.name}`
+          text: `Badhai ho ${referrer.name}! Aapko ₹100 mila ${user.name} ko refer karne ke liye`
         });
       }
     }
 
-    // Send welcome email
+    // Welcome email
     await transporter.sendMail({
       from: `"PaisaPe" <${process.env.GMAIL_USER}>`,
       to: email,
-      subject: 'Welcome to PaisaPe!',
+      subject: 'PaisaPe mein aapka swagat hai!',
       html: emailTemplates.welcomeEmail(user.name, user.referralCode),
-      text: `Welcome to PaisaPe, ${user.name}!`
+      text: `PaisaPe mein aapka swagat hai, ${user.name}!`
     });
+
+    // Generate token after verification
+    const token = generateToken(user);
 
     res.json({ 
       success: true,
-      message: 'Email verified successfully!',
+      message: 'Email verify ho gaya!',
+      token,
       user: {
         name: user.name,
         email: user.email,
@@ -215,15 +223,10 @@ exports.verifyOTP = async (req, res) => {
     });
 
   } catch (error) {
-    console.error('OTP verification error:', {
-      message: error.message,
-      stack: error.stack,
-      requestBody: req.body
-    });
-    
+    console.error('OTP verification error:', error);
     res.status(500).json({ 
       success: false,
-      message: 'OTP verification failed. Please try again.',
+      message: 'OTP verification fail. Phir se try karo.',
       error: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
   }
@@ -237,36 +240,31 @@ exports.login = async (req, res) => {
     if (!user) {
       return res.status(404).json({ 
         success: false,
-        message: 'User not found' 
+        message: 'User nahi mila' 
       });
     }
 
     if (user.password !== password) {
       return res.status(401).json({ 
         success: false,
-        message: 'Incorrect password' 
+        message: 'Password galat hai' 
       });
     }
 
     if (!user.isVerified) {
       return res.status(403).json({ 
         success: false,
-        message: 'Email not verified. Please verify OTP.' 
+        message: 'Email verify nahi hua. OTP verify karo.' 
       });
     }
 
-    req.session.user = { 
-      id: user._id, 
-      email: user.email, 
-      name: user.name,
-      referralCode: user.referralCode,
-      referralCount: user.referralCount,
-      referralEarnings: user.referralEarnings
-    };
+    // Generate token
+    const token = generateToken(user);
     
     res.json({ 
       success: true,
       message: 'Login successful',
+      token,
       user: { 
         name: user.name, 
         email: user.email,
@@ -281,7 +279,7 @@ exports.login = async (req, res) => {
     console.error('Login error:', error);
     res.status(500).json({ 
       success: false,
-      message: 'Error logging in',
+      message: 'Login mein error aaya',
       error: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
   }
@@ -295,14 +293,14 @@ exports.resendOTP = async (req, res) => {
     if (!user) {
       return res.status(404).json({ 
         success: false,
-        message: 'User not found' 
+        message: 'User nahi mila' 
       });
     }
 
     if (user.isVerified) {
       return res.status(400).json({ 
         success: false,
-        message: 'User already verified' 
+        message: 'User pehle hi verify ho chuka hai' 
       });
     }
 
@@ -316,32 +314,51 @@ exports.resendOTP = async (req, res) => {
       to: email,
       subject: 'Resend OTP - PaisaPe',
       html: emailTemplates.resendOTP(otp, user.name),
-      text: `Your new OTP is: ${otp}`
+      text: `Aapka naya OTP hai: ${otp}`
     });
 
     res.json({ 
       success: true,
-      message: 'OTP resent successfully.' 
+      message: 'OTP phir se bhej diya gaya.' 
     });
 
   } catch (error) {
     console.error('Resend OTP error:', error);
     res.status(500).json({ 
       success: false,
-      message: 'Error resending OTP',
+      message: 'OTP resend mein error aaya',
       error: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
   }
 };
 
-exports.currentUser = (req, res) => {
-  if (req.session.user) {
+exports.currentUser = async (req, res) => {
+  try {
+    const token = req.headers.authorization?.split(' ')[1];
+    
+    if (!token) {
+      return res.json({ 
+        success: true,
+        isAuthenticated: false 
+      });
+    }
+
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    const user = await User.findById(decoded.id).select('-password -otp -otpExpiry');
+
+    if (!user) {
+      return res.json({ 
+        success: true,
+        isAuthenticated: false 
+      });
+    }
+
     res.json({ 
       success: true,
       isAuthenticated: true,
-      user: req.session.user 
+      user 
     });
-  } else {
+  } catch (error) {
     res.json({ 
       success: true,
       isAuthenticated: false 
@@ -350,17 +367,9 @@ exports.currentUser = (req, res) => {
 };
 
 exports.logout = (req, res) => {
-  req.session.destroy((err) => {
-    if (err) {
-      console.error('Logout error:', err);
-      return res.status(500).json({ 
-        success: false,
-        message: 'Error logging out' 
-      });
-    }
-    res.json({ 
-      success: true,
-      message: 'Logged out successfully' 
-    });
+  // Client side pe token delete karna hoga
+  res.json({ 
+    success: true,
+    message: 'Logout successful' 
   });
 };
